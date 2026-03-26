@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard Paciente</title>
+  <link rel="stylesheet" href="css/estilos.css" />
+  <link rel="stylesheet" href="css/alertas.css" />
+</head>
+<body>
+  <main class="pantalla">
+    <h1>Panel del Paciente</h1>
+
+    <section class="card">
+      <h2>Hidratacion diaria</h2>
+      <div class="grid-botones">
+        <button id="btn-agua-250">+ 250ml (Vaso)</button>
+        <button id="btn-agua-500">+ 500ml (Botella)</button>
+      </div>
+      <div class="barra">
+        <div id="barra-hidratacion" class="barra-fill"></div>
+      </div>
+      <p id="texto-hidratacion">0 / 2000 ml</p>
+    </section>
+
+    <section class="card">
+      <h2>Procedimiento</h2>
+      <p id="siguiente-procedimiento">Siguiente procedimiento: pendiente</p>
+      <form id="form-procedimiento">
+        <label><input type="checkbox" name="lavadoManos" /> Lavado de manos</label>
+        <label><input type="checkbox" name="materialLimpio" /> Material limpio</label>
+        <label><input type="checkbox" name="tecnicaCorrecta" /> Tecnica correcta</label>
+        <button type="submit">Confirmar Procedimiento</button>
+      </form>
+      <p id="mensaje-procedimiento" class="mensaje"></p>
+    </section>
+
+    <section id="alertas-paciente" class="card" aria-live="polite">
+      <h2>Alertas</h2>
+      <div id="lista-alertas-paciente"></div>
+    </section>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/roles.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

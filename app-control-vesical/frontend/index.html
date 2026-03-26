@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>App Control Vesical - Inicio</title>
+  <link rel="stylesheet" href="css/estilos.css" />
+  <link rel="stylesheet" href="css/alertas.css" />
+</head>
+<body>
+  <main class="pantalla">
+    <h1>Control Vesical</h1>
+    <p class="subtitulo">Primer acceso: selecciona tu perfil</p>
+    <p id="mensaje-inicio" class="mensaje" aria-live="polite"></p>
+
+    <section class="grid-botones">
+      <button id="btn-paciente" class="btn-principal">Soy Paciente</button>
+      <button id="btn-cuidador" class="btn-secundario">Soy Clinico</button>
+    </section>
+
+    <section id="panel-cuidador" class="card oculto" aria-live="polite">
+      <h2>Vincular clinico</h2>
+      <p>Ingresa el codigo entregado por el paciente (ej. AB12 o PAC-AB12).</p>
+      <form id="form-vincular-cuidador">
+        <input id="codigo-vinculacion" type="text" placeholder="AB12" required />
+        <button type="submit">Conectar</button>
+      </form>
+      <p id="mensaje-vinculacion" class="mensaje"></p>
+    </section>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/roles.js"></script>
+  <script src="js/app.js?v=20260326"></script>
+</body>
+</html>

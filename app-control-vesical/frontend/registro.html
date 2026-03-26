@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Registro de Perfil</title>
+  <link rel="stylesheet" href="css/estilos.css" />
+  <link rel="stylesheet" href="css/alertas.css" />
+</head>
+<body>
+  <main class="pantalla">
+    <h1>Configuracion Inicial del Paciente</h1>
+    <form id="form-registro">
+      <label for="nombre">Nombre</label>
+      <input id="nombre" name="nombre" type="text" required />
+
+      <label for="edad">Edad</label>
+      <input id="edad" name="edad" type="number" min="1" max="120" required />
+
+      <label for="sexo">Sexo</label>
+      <select id="sexo" name="sexo" required>
+        <option value="">Selecciona una opcion</option>
+        <option value="femenino">Femenino</option>
+        <option value="masculino">Masculino</option>
+        <option value="otro">Otro</option>
+      </select>
+
+      <label for="nivel-lesion">Nivel de lesion</label>
+      <select id="nivel-lesion" name="nivelLesion" required>
+        <option value="">Selecciona nivel</option>
+        <option value="toracica">Toracica</option>
+        <option value="lumbar">Lumbar</option>
+        <option value="sacra">Sacra</option>
+      </select>
+
+      <label for="tipo-manejo">Tipo de manejo vesical</label>
+      <select id="tipo-manejo" name="tipoManejo" required>
+        <option value="">Selecciona tipo de manejo</option>
+        <option value="cateterismo_intermitente">Cateterismo intermitente</option>
+        <option value="sonda_permanente">Sonda permanente</option>
+      </select>
+
+      <label for="tiene-cuidador">Tiene cuidador</label>
+      <select id="tiene-cuidador" name="tieneCuidador" required>
+        <option value="">Selecciona una opcion</option>
+        <option value="si">Si</option>
+        <option value="no">No</option>
+      </select>
+
+      <button type="submit">Guardar perfil</button>
+    </form>
+
+    <section id="bloque-codigo" class="card oculto">
+      <h2>Codigo de vinculacion</h2>
+      <p id="texto-codigo-guardado">Comparte este codigo con tu clinico:</p>
+      <p id="codigo-generado" class="codigo"></p>
+    </section>
+
+    <section id="menu-roles-registro" class="card oculto" aria-live="polite">
+      <h2>Selecciona como deseas continuar</h2>
+      <div class="grid-botones">
+        <button id="btn-continuar-paciente" type="button" class="btn-principal">Soy Paciente</button>
+        <button id="btn-continuar-clinico" type="button" class="btn-secundario">Soy Clinico</button>
+      </div>
+    </section>
+
+    <p id="mensaje-registro" class="mensaje"></p>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/roles.js"></script>
+  <script src="js/app.js?v=20260326"></script>
+</body>
+</html>
