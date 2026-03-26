@@ -3,6 +3,10 @@ const store = require("./sessionStore");
 const META_HIDRATACION_ML = 2000;
 const INTERVALO_CATETERISMO_MINUTOS = 4 * 60;
 const INTERVALO_BOLSA_MINUTOS = 8 * 60;
+const MS_POR_HORA = 60 * 60 * 1000;
+const MS_POR_DIA = 24 * MS_POR_HORA;
+const HORA_SILENCIO_INICIO = 22;
+const HORA_SILENCIO_FIN = 7;
 
 function getIntervaloMinutos(tipoManejoVesical) {
   if (tipoManejoVesical === "sonda_permanente") {
@@ -80,6 +84,7 @@ function getHidratacionDelDia(pacienteId) {
 function mapAlerta(item) {
   return {
     id: item.id,
+    tipo: item.tipo,
     nivel: item.nivel,
     mensaje: item.mensaje,
     riesgo: item.riesgo,
@@ -93,8 +98,8 @@ function getAlertasActivasByPacienteId(pacienteId) {
   return store.getAlertasActivasByPacienteId(pacienteId).map(mapAlerta);
 }
 
-function ensureNoDuplicatedActiveAlert(pacienteId, nivel, destino) {
-  const existing = store.findActiveAlerta(pacienteId, nivel, destino);
+function ensureNoDuplicatedActiveAlert(pacienteId, nivel, destino, tipo = null) {
+  const existing = store.findActiveAlerta(pacienteId, nivel, destino, tipo);
   return Boolean(existing);
 }
 
@@ -115,6 +120,32 @@ function resolverAlertasActivas(pacienteId, estadoFinal = "resuelta") {
   store.updateAlertasByPacienteId(pacienteId, payload);
 }
 
+function resolverAlertasActivasByTipo(pacienteId, tipo, estadoFinal = "resuelta") {
+  const payload =
+    estadoFinal === "confirmada"
+      ? { estado: "confirmada", confirmada_en: new Date().toISOString() }
+      : { estado: "resuelta", resuelta_en: new Date().toISOString() };
+
+  store.updateAlertasActivasByPacienteIdAndTipo(pacienteId, tipo, payload);
+}
+
+function getDiaInicio(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function calcularDiasRestantes(fechaObjetivo, now = new Date()) {
+  const objetivo = getDiaInicio(fechaObjetivo).getTime();
+  const hoy = getDiaInicio(now).getTime();
+  return Math.floor((objetivo - hoy) / MS_POR_DIA);
+}
+
+function estaEnSilencioNocturno(now = new Date()) {
+  const hora = now.getHours();
+  return hora >= HORA_SILENCIO_INICIO || hora < HORA_SILENCIO_FIN;
+}
+
 function recalcularAlertasPaciente(paciente) {
   const estado = getEstadoPaciente(paciente.id);
   if (!estado || !estado.siguiente_procedimiento_en) {
@@ -126,21 +157,22 @@ function recalcularAlertasPaciente(paciente) {
   const delayMs = now - expected;
   const delayMinutes = Math.max(0, Math.floor(delayMs / (60 * 1000)));
 
-  if (delayMs < 60 * 60 * 1000) {
+  if (delayMs < MS_POR_HORA) {
     upsertRiesgo(paciente.id, "bajo");
-    resolverAlertasActivas(paciente.id, "resuelta");
+    resolverAlertasActivasByTipo(paciente.id, "procedimiento", "resuelta");
     return [];
   }
 
   upsertRiesgo(
     paciente.id,
-    delayMs >= 2 * 60 * 60 * 1000 ? "alto" : "moderado"
+    delayMs >= 2 * MS_POR_HORA ? "alto" : "moderado"
   );
 
-  const existsYellow = ensureNoDuplicatedActiveAlert(paciente.id, "amarilla", "paciente");
+  const existsYellow = ensureNoDuplicatedActiveAlert(paciente.id, "amarilla", "paciente", "procedimiento");
   if (!existsYellow) {
     insertAlerta({
       paciente_id: paciente.id,
+      tipo: "procedimiento",
       nivel: "amarilla",
       riesgo: "moderado",
       destino: "paciente",
@@ -150,15 +182,17 @@ function recalcularAlertasPaciente(paciente) {
     });
   }
 
-  if (delayMs >= 2 * 60 * 60 * 1000) {
+  if (delayMs >= 2 * MS_POR_HORA) {
     const existsRedPatient = ensureNoDuplicatedActiveAlert(
       paciente.id,
       "roja",
-      "paciente"
+      "paciente",
+      "procedimiento"
     );
     if (!existsRedPatient) {
       insertAlerta({
         paciente_id: paciente.id,
+        tipo: "procedimiento",
         nivel: "roja",
         riesgo: "alto",
         destino: "paciente",
@@ -175,12 +209,14 @@ function recalcularAlertasPaciente(paciente) {
       const existsRedCaregiver = ensureNoDuplicatedActiveAlert(
         paciente.id,
         "roja",
-        "cuidador"
+        "cuidador",
+        "procedimiento"
       );
       if (!existsRedCaregiver) {
         insertAlerta({
           paciente_id: paciente.id,
           cuidador_id: link?.cuidador_id || null,
+          tipo: "procedimiento",
           nivel: "roja",
           riesgo: "alto",
           destino: "cuidador",
@@ -196,12 +232,140 @@ function recalcularAlertasPaciente(paciente) {
   return getAlertasActivasByPacienteId(paciente.id);
 }
 
+function recalcularRecordatoriosCambioSonda(paciente) {
+  if (paciente.tipo_manejo_vesical !== "sonda_permanente") {
+    resolverAlertasActivasByTipo(paciente.id, "sonda", "resuelta");
+    return;
+  }
+
+  const frecuenciaDias = [14, 30].includes(Number(paciente.frecuencia_cambio_sonda_dias))
+    ? Number(paciente.frecuencia_cambio_sonda_dias)
+    : 30;
+  const fechaBaseIso = paciente.fecha_ultimo_cambio_sonda || paciente.onboarding_completado_en;
+  const fechaBase = new Date(fechaBaseIso);
+  const siguienteCambio = new Date(fechaBase.getTime() + frecuenciaDias * MS_POR_DIA);
+  const diasRestantes = calcularDiasRestantes(siguienteCambio);
+
+  if (diasRestantes > 3) {
+    resolverAlertasActivasByTipo(paciente.id, "sonda", "resuelta");
+    return;
+  }
+
+  if (diasRestantes === 3) {
+    const existeAlertaPrev = ensureNoDuplicatedActiveAlert(
+      paciente.id,
+      "amarilla",
+      "paciente",
+      "sonda"
+    );
+    if (!existeAlertaPrev) {
+      insertAlerta({
+        paciente_id: paciente.id,
+        tipo: "sonda",
+        nivel: "amarilla",
+        riesgo: "moderado",
+        destino: "paciente",
+        mensaje: "Se acerca el cambio de sonda. Faltan 3 dias para el recambio",
+        retraso_minutos: 0,
+        estado: "activa",
+      });
+    }
+    return;
+  }
+
+  const existeAlertaDia = ensureNoDuplicatedActiveAlert(
+    paciente.id,
+    "roja",
+    "paciente",
+    "sonda"
+  );
+
+  if (!existeAlertaDia) {
+    insertAlerta({
+      paciente_id: paciente.id,
+      tipo: "sonda",
+      nivel: "roja",
+      riesgo: "alto",
+      destino: "paciente",
+      mensaje: "Hoy corresponde cambio de sonda permanente (Foley)",
+      retraso_minutos: 0,
+      estado: "activa",
+    });
+  }
+}
+
+function recalcularRecordatoriosAgua(paciente) {
+  if (estaEnSilencioNocturno()) {
+    resolverAlertasActivasByTipo(paciente.id, "hidratacion", "resuelta");
+    return;
+  }
+
+  const ultimoRegistro = store.getUltimoRegistroHidratacion(paciente.id);
+  const referenciaIso = ultimoRegistro?.registrado_en || paciente.onboarding_completado_en;
+  const transcurridoMs = Date.now() - new Date(referenciaIso).getTime();
+
+  if (transcurridoMs < 3 * MS_POR_HORA) {
+    resolverAlertasActivasByTipo(paciente.id, "hidratacion", "resuelta");
+    return;
+  }
+
+  if (transcurridoMs >= 4 * MS_POR_HORA) {
+    const existeRoja = ensureNoDuplicatedActiveAlert(
+      paciente.id,
+      "roja",
+      "paciente",
+      "hidratacion"
+    );
+
+    if (!existeRoja) {
+      insertAlerta({
+        paciente_id: paciente.id,
+        tipo: "hidratacion",
+        nivel: "roja",
+        riesgo: "alto",
+        destino: "paciente",
+        mensaje: "Han pasado 4 horas sin registrar agua. Toma agua ahora",
+        retraso_minutos: Math.floor(transcurridoMs / (60 * 1000)),
+        estado: "activa",
+      });
+    }
+    return;
+  }
+
+  const existeAmarilla = ensureNoDuplicatedActiveAlert(
+    paciente.id,
+    "amarilla",
+    "paciente",
+    "hidratacion"
+  );
+
+  if (!existeAmarilla) {
+    insertAlerta({
+      paciente_id: paciente.id,
+      tipo: "hidratacion",
+      nivel: "amarilla",
+      riesgo: "moderado",
+      destino: "paciente",
+      mensaje: "Es hora de tomar agua. Ya pasaron 3 horas sin registro",
+      retraso_minutos: Math.floor(transcurridoMs / (60 * 1000)),
+      estado: "activa",
+    });
+  }
+}
+
 async function iniciarPaciente(data) {
   const tieneCuidador = Boolean(data.tieneCuidador);
   const codigoVinculacion = await generarCodigoVinculacion();
   const intervalo = getIntervaloMinutos(data.tipoManejo);
   const now = new Date();
   const siguiente = addMinutesToIso(now, intervalo);
+  const esSondaPermanente = data.tipoManejo === "sonda_permanente";
+  const frecuenciaSondaDias = [14, 30].includes(Number(data.frecuenciaCambioSondaDias))
+    ? Number(data.frecuenciaCambioSondaDias)
+    : 30;
+  const fechaUltimoCambioSonda = esSondaPermanente
+    ? new Date(data.fechaUltimoCambioSonda || now.toISOString()).toISOString()
+    : null;
 
   const paciente = store.insertPaciente({
     nombre: data.nombre,
@@ -211,6 +375,8 @@ async function iniciarPaciente(data) {
     tipo_manejo_vesical: data.tipoManejo,
     tiene_cuidador: tieneCuidador,
     codigo_vinculacion: codigoVinculacion,
+    frecuencia_cambio_sonda_dias: esSondaPermanente ? frecuenciaSondaDias : null,
+    fecha_ultimo_cambio_sonda: fechaUltimoCambioSonda,
     cuidador_vinculado: false,
     onboarding_completado_en: now.toISOString(),
   });
@@ -232,6 +398,8 @@ async function iniciarPaciente(data) {
       nivelLesion: paciente.nivel_lesion,
       tipoManejo: paciente.tipo_manejo_vesical,
       tieneCuidador: paciente.tiene_cuidador,
+      frecuenciaCambioSondaDias: paciente.frecuencia_cambio_sonda_dias,
+      fechaUltimoCambioSonda: paciente.fecha_ultimo_cambio_sonda,
     },
     codigoVinculacion,
     siguienteProcedimiento: siguiente,
@@ -290,6 +458,8 @@ async function registrarAgua(mililitros) {
     origen: "boton_rapido",
   });
 
+  resolverAlertasActivasByTipo(paciente.id, "hidratacion", "resuelta");
+
   return getHidratacionDelDia(paciente.id);
 }
 
@@ -324,7 +494,7 @@ async function confirmarProcedimiento({ checklist, actor }) {
     riesgo_actual: "bajo",
   });
 
-  resolverAlertasActivas(paciente.id, "resuelta");
+  resolverAlertasActivasByTipo(paciente.id, "procedimiento", "resuelta");
 
   return {
     ok: true,
@@ -340,8 +510,10 @@ async function recalcularAlertas() {
 
   let total = 0;
   for (const paciente of pacientes) {
-    const alertas = recalcularAlertasPaciente(paciente);
-    total += alertas.length;
+    recalcularAlertasPaciente(paciente);
+    recalcularRecordatoriosCambioSonda(paciente);
+    recalcularRecordatoriosAgua(paciente);
+    total += getAlertasActivasByPacienteId(paciente.id).length;
   }
 
   return { totalAlertasActivas: total };
@@ -355,6 +527,8 @@ async function obtenerAlertasActivas() {
   }
 
   recalcularAlertasPaciente(paciente);
+  recalcularRecordatoriosCambioSonda(paciente);
+  recalcularRecordatoriosAgua(paciente);
   return getAlertasActivasByPacienteId(paciente.id);
 }
 
@@ -369,6 +543,35 @@ async function confirmarAlertas() {
   return { ok: true, mensaje: "Alertas confirmadas" };
 }
 
+async function crearAlertaSimulada({ tipo = "hidratacion", nivel = "amarilla", mensaje, destino = "paciente" }) {
+  const paciente = getPacienteActivo();
+
+  if (!paciente) {
+    return { ok: false, mensaje: "No hay paciente activo" };
+  }
+
+  const riesgo = nivel === "roja" ? "alto" : "moderado";
+  const texto = mensaje ||
+    (tipo === "sonda"
+      ? "Simulacion: Hoy corresponde cambio de sonda"
+      : tipo === "procedimiento"
+        ? "Simulacion: Retraso en procedimiento vesical"
+        : "Simulacion: Es hora de tomar agua");
+
+  insertAlerta({
+    paciente_id: paciente.id,
+    tipo: `simulada_${tipo}`,
+    nivel,
+    riesgo,
+    destino,
+    mensaje: texto,
+    retraso_minutos: 0,
+    estado: "activa",
+  });
+
+  return { ok: true, mensaje: "Alerta simulada creada" };
+}
+
 async function obtenerResumen() {
   const paciente = getPacienteActivo();
 
@@ -377,6 +580,8 @@ async function obtenerResumen() {
   }
 
   recalcularAlertasPaciente(paciente);
+  recalcularRecordatoriosCambioSonda(paciente);
+  recalcularRecordatoriosAgua(paciente);
 
   const hidratacion = getHidratacionDelDia(paciente.id);
   const estado = getEstadoPaciente(paciente.id);
@@ -392,6 +597,8 @@ async function obtenerResumen() {
       nivelLesion: paciente.nivel_lesion,
       tipoManejo: paciente.tipo_manejo_vesical,
       tieneCuidador: paciente.tiene_cuidador,
+      frecuenciaCambioSondaDias: paciente.frecuencia_cambio_sonda_dias,
+      fechaUltimoCambioSonda: paciente.fecha_ultimo_cambio_sonda,
     },
     cuidadorVinculado: paciente.cuidador_vinculado,
     codigoVinculacion: paciente.codigo_vinculacion,
@@ -412,4 +619,5 @@ module.exports = {
   recalcularAlertas,
   obtenerAlertasActivas,
   confirmarAlertas,
+  crearAlertaSimulada,
 };

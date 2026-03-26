@@ -33,6 +33,7 @@ const api = {
   estadoProcedimiento: () => apiGet("/vesical/procedimiento/estado"),
   obtenerAlertas: () => apiGet("/alertas"),
   confirmarAlertas: () => apiPost("/alertas/confirmar", {}),
+  simularAlerta: (payload) => apiPost("/alertas/simular", payload),
 };
 
 window.api = api;

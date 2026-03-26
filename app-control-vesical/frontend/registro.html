@@ -40,6 +40,18 @@
         <option value="sonda_permanente">Sonda permanente</option>
       </select>
 
+      <section id="config-sonda" class="card oculto" aria-live="polite">
+        <h2>Configuracion de sonda permanente (Foley)</h2>
+        <label for="frecuencia-cambio-sonda">Frecuencia de cambio</label>
+        <select id="frecuencia-cambio-sonda" name="frecuenciaCambioSondaDias">
+          <option value="14">Cada 14 dias</option>
+          <option value="30" selected>Cada 30 dias</option>
+        </select>
+
+        <label for="fecha-ultimo-cambio-sonda">Fecha del ultimo cambio</label>
+        <input id="fecha-ultimo-cambio-sonda" name="fechaUltimoCambioSonda" type="date" />
+      </section>
+
       <label for="tiene-cuidador">Tiene cuidador</label>
       <select id="tiene-cuidador" name="tieneCuidador" required>
         <option value="">Selecciona una opcion</option>
@@ -69,6 +81,6 @@
 
   <script src="js/api.js"></script>
   <script src="js/roles.js"></script>
-  <script src="js/app.js?v=20260326"></script>
+  <script src="js/app.js?v=20260326d"></script>
 </body>
 </html>

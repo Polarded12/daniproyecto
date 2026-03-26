@@ -66,6 +66,12 @@ select {
   margin-top: 0.25rem;
 }
 
+input[type="checkbox"] {
+  width: auto;
+  margin-top: 0;
+  margin-right: 0.55rem;
+}
+
 button {
   background: var(--primary);
   color: #fff;
@@ -124,6 +130,19 @@ button:hover {
   font-size: 1.35rem;
   font-weight: 700;
   letter-spacing: 0.05em;
+}
+
+.check-item {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.grupo-botones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
 }
 
 @media (max-width: 640px) {

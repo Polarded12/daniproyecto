@@ -35,6 +35,8 @@ class SessionStore {
       tipo_manejo_vesical: data.tipo_manejo_vesical,
       tiene_cuidador: Boolean(data.tiene_cuidador),
       codigo_vinculacion: data.codigo_vinculacion || null,
+      frecuencia_cambio_sonda_dias: data.frecuencia_cambio_sonda_dias || null,
+      fecha_ultimo_cambio_sonda: data.fecha_ultimo_cambio_sonda || null,
       cuidador_vinculado: Boolean(data.cuidador_vinculado),
       onboarding_completado_en: data.onboarding_completado_en,
       created_at: new Date().toISOString(),
@@ -157,6 +159,14 @@ class SessionStore {
       .sort((a, b) => new Date(b.registrado_en) - new Date(a.registrado_en));
   }
 
+  getUltimoRegistroHidratacion(pacienteId) {
+    const registros = this.hidratacion_registros
+      .filter((h) => h.paciente_id === String(pacienteId))
+      .sort((a, b) => new Date(b.registrado_en) - new Date(a.registrado_en));
+
+    return registros[0] || null;
+  }
+
   // ===== PROCEDIMIENTO_REGISTROS =====
   insertProcedimiento(data) {
     const procedimiento = {
@@ -179,6 +189,7 @@ class SessionStore {
       id: String(this.nextAlertaId++),
       paciente_id: String(data.paciente_id),
       cuidador_id: data.cuidador_id ? String(data.cuidador_id) : null,
+      tipo: data.tipo || "procedimiento",
       nivel: data.nivel,
       riesgo: data.riesgo,
       destino: data.destino,
@@ -200,14 +211,27 @@ class SessionStore {
       .sort((a, b) => new Date(b.disparada_en) - new Date(a.disparada_en));
   }
 
-  findActiveAlerta(pacienteId, nivel, destino) {
+  findActiveAlerta(pacienteId, nivel, destino, tipo = null) {
     return this.alertas.find(
       (a) =>
         a.paciente_id === String(pacienteId) &&
         a.nivel === nivel &&
         a.destino === destino &&
+        (tipo ? a.tipo === tipo : true) &&
         a.estado === "activa"
     ) || null;
+  }
+
+  getAlertasActivasByPacienteIdAndTipo(pacienteId, tipo) {
+    return this.alertas.filter(
+      (a) => a.paciente_id === String(pacienteId) && a.estado === "activa" && a.tipo === tipo
+    );
+  }
+
+  updateAlertasActivasByPacienteIdAndTipo(pacienteId, tipo, updates) {
+    const alertas = this.getAlertasActivasByPacienteIdAndTipo(pacienteId, tipo);
+    alertas.forEach((a) => Object.assign(a, updates));
+    return alertas;
   }
 
   updateAlerta(alertaId, updates) {
