@@ -1,25 +1,40 @@
-const API_BASE_URL = "http://localhost:3000/api";
+const API_BASE_URL = window.__API_BASE_URL__ || "https://daniproyecto.onrender.com/api";
 
-async function apiGet(path) {
-  const response = await fetch(`${API_BASE_URL}${path}`);
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.mensaje || "Error en la solicitud");
+async function request(path, options = {}) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, options);
+  } catch (_error) {
+    throw new Error("No se pudo conectar con el backend. Verifica que este ejecutandose en http://localhost:3000");
   }
+
+  let data = {};
+  try {
+    data = await response.json();
+  } catch (_error) {
+    if (!response.ok) {
+      throw new Error(`Error HTTP ${response.status}`);
+    }
+    return {};
+  }
+
+  if (!response.ok) {
+    throw new Error(data.mensaje || `Error HTTP ${response.status}`);
+  }
+
   return data;
 }
 
+async function apiGet(path) {
+  return request(path);
+}
+
 async function apiPost(path, payload) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  return request(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.mensaje || "Error en la solicitud");
-  }
-  return data;
 }
 
 const api = {
