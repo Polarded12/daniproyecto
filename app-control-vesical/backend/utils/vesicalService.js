@@ -1,4 +1,4 @@
-const store = require("./sessionStore");
+const { connectDatabase } = require("../config/database");
 
 const META_HIDRATACION_ML = 2000;
 const INTERVALO_CATETERISMO_MINUTOS = 4 * 60;
@@ -7,6 +7,10 @@ const MS_POR_HORA = 60 * 60 * 1000;
 const MS_POR_DIA = 24 * MS_POR_HORA;
 const HORA_SILENCIO_INICIO = 22;
 const HORA_SILENCIO_FIN = 7;
+
+function db() {
+  return connectDatabase();
+}
 
 function getIntervaloMinutos(tipoManejoVesical) {
   if (tipoManejoVesical === "sonda_permanente") {
@@ -44,43 +48,6 @@ function toError(message, originalError) {
   return error;
 }
 
-async function generarCodigoVinculacion() {
-  return store.generar0000CodigoVinculacion();
-}
-
-function normalizarCodigoVinculacion(codigo) {
-  const normalizado = String(codigo || "").trim().toUpperCase();
-  if (normalizado.startsWith("PAC-")) {
-    return normalizado.slice(4);
-  }
-  return normalizado;
-}
-
-function getPacienteActivo() {
-  return store.getLastPaciente();
-}
-
-function getEstadoPaciente(pacienteId) {
-  return store.getEstadoByPacienteId(pacienteId);
-}
-
-function getHidratacionDelDia(pacienteId) {
-  const historial = store.getHidratacionDelDia(pacienteId).map((item) => ({
-    ml: item.cantidad_ml,
-    fechaHora: item.registrado_en,
-  }));
-
-  const consumidoMl = historial.reduce((sum, item) => sum + Number(item.ml), 0);
-  const progreso = Math.min(100, Math.round((consumidoMl / META_HIDRATACION_ML) * 100));
-
-  return {
-    metaMl: META_HIDRATACION_ML,
-    consumidoMl,
-    progreso,
-    historial,
-  };
-}
-
 function mapAlerta(item) {
   return {
     id: item.id,
@@ -92,41 +59,6 @@ function mapAlerta(item) {
     para: item.destino,
     activa: item.estado === "activa",
   };
-}
-
-function getAlertasActivasByPacienteId(pacienteId) {
-  return store.getAlertasActivasByPacienteId(pacienteId).map(mapAlerta);
-}
-
-function ensureNoDuplicatedActiveAlert(pacienteId, nivel, destino, tipo = null) {
-  const existing = store.findActiveAlerta(pacienteId, nivel, destino, tipo);
-  return Boolean(existing);
-}
-
-function insertAlerta(payload) {
-  store.insertAlerta(payload);
-}
-
-function upsertRiesgo(pacienteId, riesgo) {
-  store.updateEstadoVesical(pacienteId, { riesgo_actual: riesgo });
-}
-
-function resolverAlertasActivas(pacienteId, estadoFinal = "resuelta") {
-  const payload =
-    estadoFinal === "confirmada"
-      ? { estado: "confirmada", confirmada_en: new Date().toISOString() }
-      : { estado: "resuelta", resuelta_en: new Date().toISOString() };
-
-  store.updateAlertasByPacienteId(pacienteId, payload);
-}
-
-function resolverAlertasActivasByTipo(pacienteId, tipo, estadoFinal = "resuelta") {
-  const payload =
-    estadoFinal === "confirmada"
-      ? { estado: "confirmada", confirmada_en: new Date().toISOString() }
-      : { estado: "resuelta", resuelta_en: new Date().toISOString() };
-
-  store.updateAlertasActivasByPacienteIdAndTipo(pacienteId, tipo, payload);
 }
 
 function getDiaInicio(date) {
@@ -146,8 +78,240 @@ function estaEnSilencioNocturno(now = new Date()) {
   return hora >= HORA_SILENCIO_INICIO || hora < HORA_SILENCIO_FIN;
 }
 
-function recalcularAlertasPaciente(paciente) {
-  const estado = getEstadoPaciente(paciente.id);
+function generarCodigoBase() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let codigo = "";
+  for (let i = 0; i < 4; i++) {
+    codigo += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return codigo;
+}
+
+async function generarCodigoVinculacion() {
+  for (let i = 0; i < 20; i++) {
+    const codigo = generarCodigoBase();
+    const { data, error } = await db()
+      .from("pacientes")
+      .select("id")
+      .eq("codigo_vinculacion", codigo)
+      .limit(1);
+
+    if (error) {
+      throw toError("No se pudo validar codigo de vinculacion", error);
+    }
+
+    if (!data || data.length === 0) {
+      return codigo;
+    }
+  }
+
+  throw new Error("No se pudo generar un codigo de vinculacion unico");
+}
+
+function normalizarCodigoVinculacion(codigo) {
+  const normalizado = String(codigo || "").trim().toUpperCase();
+  if (normalizado.startsWith("PAC-")) {
+    return normalizado.slice(4);
+  }
+  return normalizado;
+}
+
+async function getPacienteActivo() {
+  const { data, error } = await db()
+    .from("pacientes")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw toError("No se pudo obtener paciente activo", error);
+  }
+
+  return data || null;
+}
+
+async function getAllPacientes() {
+  const { data, error } = await db().from("pacientes").select("*");
+
+  if (error) {
+    throw toError("No se pudo obtener pacientes", error);
+  }
+
+  return data || [];
+}
+
+async function getEstadoPaciente(pacienteId) {
+  const { data, error } = await db()
+    .from("estado_vesical_paciente")
+    .select("*")
+    .eq("paciente_id", pacienteId)
+    .maybeSingle();
+
+  if (error) {
+    throw toError("No se pudo obtener estado vesical", error);
+  }
+
+  return data || null;
+}
+
+async function getHidratacionDelDia(pacienteId) {
+  const inicio = new Date();
+  inicio.setHours(0, 0, 0, 0);
+
+  const { data, error } = await db()
+    .from("hidratacion_registros")
+    .select("cantidad_ml, registrado_en")
+    .eq("paciente_id", pacienteId)
+    .gte("registrado_en", inicio.toISOString())
+    .order("registrado_en", { ascending: false });
+
+  if (error) {
+    throw toError("No se pudo obtener hidratacion", error);
+  }
+
+  const historial = (data || []).map((item) => ({
+    ml: item.cantidad_ml,
+    fechaHora: item.registrado_en,
+  }));
+
+  const consumidoMl = historial.reduce((sum, item) => sum + Number(item.ml), 0);
+  const progreso = Math.min(100, Math.round((consumidoMl / META_HIDRATACION_ML) * 100));
+
+  return {
+    metaMl: META_HIDRATACION_ML,
+    consumidoMl,
+    progreso,
+    historial,
+  };
+}
+
+async function getUltimoRegistroHidratacion(pacienteId) {
+  const { data, error } = await db()
+    .from("hidratacion_registros")
+    .select("registrado_en")
+    .eq("paciente_id", pacienteId)
+    .order("registrado_en", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw toError("No se pudo obtener ultimo registro de hidratacion", error);
+  }
+
+  return data || null;
+}
+
+async function getAlertasActivasByPacienteId(pacienteId) {
+  const { data, error } = await db()
+    .from("alertas")
+    .select("*")
+    .eq("paciente_id", pacienteId)
+    .eq("estado", "activa")
+    .order("disparada_en", { ascending: false });
+
+  if (error) {
+    throw toError("No se pudieron obtener alertas activas", error);
+  }
+
+  return (data || []).map(mapAlerta);
+}
+
+async function ensureNoDuplicatedActiveAlert(pacienteId, nivel, destino, tipo = null) {
+  let query = db()
+    .from("alertas")
+    .select("id")
+    .eq("paciente_id", pacienteId)
+    .eq("nivel", nivel)
+    .eq("destino", destino)
+    .eq("estado", "activa")
+    .limit(1);
+
+  if (tipo) {
+    query = query.eq("tipo", tipo);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    throw toError("No se pudo validar alerta duplicada", error);
+  }
+
+  return Boolean(data && data.length > 0);
+}
+
+async function insertAlerta(payload) {
+  const { error } = await db().from("alertas").insert(payload);
+  if (error) {
+    throw toError("No se pudo crear alerta", error);
+  }
+}
+
+async function upsertRiesgo(pacienteId, riesgo) {
+  const { error } = await db()
+    .from("estado_vesical_paciente")
+    .update({ riesgo_actual: riesgo })
+    .eq("paciente_id", pacienteId);
+
+  if (error) {
+    throw toError("No se pudo actualizar riesgo", error);
+  }
+}
+
+async function resolverAlertasActivas(pacienteId, estadoFinal = "resuelta") {
+  const payload =
+    estadoFinal === "confirmada"
+      ? { estado: "confirmada", confirmada_en: new Date().toISOString() }
+      : { estado: "resuelta", resuelta_en: new Date().toISOString() };
+
+  const { error } = await db()
+    .from("alertas")
+    .update(payload)
+    .eq("paciente_id", pacienteId)
+    .eq("estado", "activa");
+
+  if (error) {
+    throw toError("No se pudieron resolver alertas", error);
+  }
+}
+
+async function resolverAlertasActivasByTipo(pacienteId, tipo, estadoFinal = "resuelta") {
+  const payload =
+    estadoFinal === "confirmada"
+      ? { estado: "confirmada", confirmada_en: new Date().toISOString() }
+      : { estado: "resuelta", resuelta_en: new Date().toISOString() };
+
+  const { error } = await db()
+    .from("alertas")
+    .update(payload)
+    .eq("paciente_id", pacienteId)
+    .eq("tipo", tipo)
+    .eq("estado", "activa");
+
+  if (error) {
+    throw toError("No se pudieron resolver alertas por tipo", error);
+  }
+}
+
+async function getActiveLinkByPacienteId(pacienteId) {
+  const { data, error } = await db()
+    .from("paciente_cuidador")
+    .select("*")
+    .eq("paciente_id", pacienteId)
+    .eq("activo", true)
+    .order("vinculado_en", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw toError("No se pudo obtener vinculacion activa", error);
+  }
+
+  return data || null;
+}
+
+async function recalcularAlertasPaciente(paciente) {
+  const estado = await getEstadoPaciente(paciente.id);
   if (!estado || !estado.siguiente_procedimiento_en) {
     return [];
   }
@@ -158,19 +322,21 @@ function recalcularAlertasPaciente(paciente) {
   const delayMinutes = Math.max(0, Math.floor(delayMs / (60 * 1000)));
 
   if (delayMs < MS_POR_HORA) {
-    upsertRiesgo(paciente.id, "bajo");
-    resolverAlertasActivasByTipo(paciente.id, "procedimiento", "resuelta");
+    await upsertRiesgo(paciente.id, "bajo");
+    await resolverAlertasActivasByTipo(paciente.id, "procedimiento", "resuelta");
     return [];
   }
 
-  upsertRiesgo(
-    paciente.id,
-    delayMs >= 2 * MS_POR_HORA ? "alto" : "moderado"
-  );
+  await upsertRiesgo(paciente.id, delayMs >= 2 * MS_POR_HORA ? "alto" : "moderado");
 
-  const existsYellow = ensureNoDuplicatedActiveAlert(paciente.id, "amarilla", "paciente", "procedimiento");
+  const existsYellow = await ensureNoDuplicatedActiveAlert(
+    paciente.id,
+    "amarilla",
+    "paciente",
+    "procedimiento"
+  );
   if (!existsYellow) {
-    insertAlerta({
+    await insertAlerta({
       paciente_id: paciente.id,
       tipo: "procedimiento",
       nivel: "amarilla",
@@ -183,45 +349,44 @@ function recalcularAlertasPaciente(paciente) {
   }
 
   if (delayMs >= 2 * MS_POR_HORA) {
-    const existsRedPatient = ensureNoDuplicatedActiveAlert(
+    const existsRedPatient = await ensureNoDuplicatedActiveAlert(
       paciente.id,
       "roja",
       "paciente",
       "procedimiento"
     );
+
     if (!existsRedPatient) {
-      insertAlerta({
+      await insertAlerta({
         paciente_id: paciente.id,
         tipo: "procedimiento",
         nivel: "roja",
         riesgo: "alto",
         destino: "paciente",
-        mensaje:
-          "Peligro: Alto riesgo de infeccion. Realiza el procedimiento de inmediato",
+        mensaje: "Peligro: Alto riesgo de infeccion. Realiza el procedimiento de inmediato",
         retraso_minutos: delayMinutes,
         estado: "activa",
       });
     }
 
     if (paciente.cuidador_vinculado) {
-      const link = store.getActiveLinkByPacienteId(paciente.id);
-
-      const existsRedCaregiver = ensureNoDuplicatedActiveAlert(
+      const link = await getActiveLinkByPacienteId(paciente.id);
+      const existsRedCaregiver = await ensureNoDuplicatedActiveAlert(
         paciente.id,
         "roja",
         "cuidador",
         "procedimiento"
       );
+
       if (!existsRedCaregiver) {
-        insertAlerta({
+        await insertAlerta({
           paciente_id: paciente.id,
           cuidador_id: link?.cuidador_id || null,
           tipo: "procedimiento",
           nivel: "roja",
           riesgo: "alto",
           destino: "cuidador",
-          mensaje:
-            "Alerta roja del paciente vinculado. Intervencion recomendada",
+          mensaje: "Alerta roja del paciente vinculado. Intervencion recomendada",
           retraso_minutos: delayMinutes,
           estado: "activa",
         });
@@ -232,9 +397,9 @@ function recalcularAlertasPaciente(paciente) {
   return getAlertasActivasByPacienteId(paciente.id);
 }
 
-function recalcularRecordatoriosCambioSonda(paciente) {
+async function recalcularRecordatoriosCambioSonda(paciente) {
   if (paciente.tipo_manejo_vesical !== "sonda_permanente") {
-    resolverAlertasActivasByTipo(paciente.id, "sonda", "resuelta");
+    await resolverAlertasActivasByTipo(paciente.id, "sonda", "resuelta");
     return;
   }
 
@@ -247,19 +412,20 @@ function recalcularRecordatoriosCambioSonda(paciente) {
   const diasRestantes = calcularDiasRestantes(siguienteCambio);
 
   if (diasRestantes > 3) {
-    resolverAlertasActivasByTipo(paciente.id, "sonda", "resuelta");
+    await resolverAlertasActivasByTipo(paciente.id, "sonda", "resuelta");
     return;
   }
 
   if (diasRestantes === 3) {
-    const existeAlertaPrev = ensureNoDuplicatedActiveAlert(
+    const existeAlertaPrev = await ensureNoDuplicatedActiveAlert(
       paciente.id,
       "amarilla",
       "paciente",
       "sonda"
     );
+
     if (!existeAlertaPrev) {
-      insertAlerta({
+      await insertAlerta({
         paciente_id: paciente.id,
         tipo: "sonda",
         nivel: "amarilla",
@@ -273,7 +439,7 @@ function recalcularRecordatoriosCambioSonda(paciente) {
     return;
   }
 
-  const existeAlertaDia = ensureNoDuplicatedActiveAlert(
+  const existeAlertaDia = await ensureNoDuplicatedActiveAlert(
     paciente.id,
     "roja",
     "paciente",
@@ -281,7 +447,7 @@ function recalcularRecordatoriosCambioSonda(paciente) {
   );
 
   if (!existeAlertaDia) {
-    insertAlerta({
+    await insertAlerta({
       paciente_id: paciente.id,
       tipo: "sonda",
       nivel: "roja",
@@ -294,23 +460,23 @@ function recalcularRecordatoriosCambioSonda(paciente) {
   }
 }
 
-function recalcularRecordatoriosAgua(paciente) {
+async function recalcularRecordatoriosAgua(paciente) {
   if (estaEnSilencioNocturno()) {
-    resolverAlertasActivasByTipo(paciente.id, "hidratacion", "resuelta");
+    await resolverAlertasActivasByTipo(paciente.id, "hidratacion", "resuelta");
     return;
   }
 
-  const ultimoRegistro = store.getUltimoRegistroHidratacion(paciente.id);
+  const ultimoRegistro = await getUltimoRegistroHidratacion(paciente.id);
   const referenciaIso = ultimoRegistro?.registrado_en || paciente.onboarding_completado_en;
   const transcurridoMs = Date.now() - new Date(referenciaIso).getTime();
 
   if (transcurridoMs < 3 * MS_POR_HORA) {
-    resolverAlertasActivasByTipo(paciente.id, "hidratacion", "resuelta");
+    await resolverAlertasActivasByTipo(paciente.id, "hidratacion", "resuelta");
     return;
   }
 
   if (transcurridoMs >= 4 * MS_POR_HORA) {
-    const existeRoja = ensureNoDuplicatedActiveAlert(
+    const existeRoja = await ensureNoDuplicatedActiveAlert(
       paciente.id,
       "roja",
       "paciente",
@@ -318,7 +484,7 @@ function recalcularRecordatoriosAgua(paciente) {
     );
 
     if (!existeRoja) {
-      insertAlerta({
+      await insertAlerta({
         paciente_id: paciente.id,
         tipo: "hidratacion",
         nivel: "roja",
@@ -332,7 +498,7 @@ function recalcularRecordatoriosAgua(paciente) {
     return;
   }
 
-  const existeAmarilla = ensureNoDuplicatedActiveAlert(
+  const existeAmarilla = await ensureNoDuplicatedActiveAlert(
     paciente.id,
     "amarilla",
     "paciente",
@@ -340,7 +506,7 @@ function recalcularRecordatoriosAgua(paciente) {
   );
 
   if (!existeAmarilla) {
-    insertAlerta({
+    await insertAlerta({
       paciente_id: paciente.id,
       tipo: "hidratacion",
       nivel: "amarilla",
@@ -367,27 +533,39 @@ async function iniciarPaciente(data) {
     ? new Date(data.fechaUltimoCambioSonda || now.toISOString()).toISOString()
     : null;
 
-  const paciente = store.insertPaciente({
-    nombre: data.nombre,
-    edad: Number(data.edad),
-    sexo: data.sexo,
-    nivel_lesion: data.nivelLesion,
-    tipo_manejo_vesical: data.tipoManejo,
-    tiene_cuidador: tieneCuidador,
-    codigo_vinculacion: codigoVinculacion,
-    frecuencia_cambio_sonda_dias: esSondaPermanente ? frecuenciaSondaDias : null,
-    fecha_ultimo_cambio_sonda: fechaUltimoCambioSonda,
-    cuidador_vinculado: false,
-    onboarding_completado_en: now.toISOString(),
-  });
+  const { data: paciente, error: pacienteError } = await db()
+    .from("pacientes")
+    .insert({
+      nombre: data.nombre,
+      edad: Number(data.edad),
+      sexo: data.sexo,
+      nivel_lesion: data.nivelLesion,
+      tipo_manejo_vesical: data.tipoManejo,
+      tiene_cuidador: tieneCuidador,
+      codigo_vinculacion: codigoVinculacion,
+      frecuencia_cambio_sonda_dias: esSondaPermanente ? frecuenciaSondaDias : null,
+      fecha_ultimo_cambio_sonda: fechaUltimoCambioSonda,
+      cuidador_vinculado: false,
+      onboarding_completado_en: now.toISOString(),
+    })
+    .select("*")
+    .single();
 
-  store.insertEstadoVesical({
+  if (pacienteError) {
+    throw toError("No se pudo crear paciente", pacienteError);
+  }
+
+  const { error: estadoError } = await db().from("estado_vesical_paciente").insert({
     paciente_id: paciente.id,
     ultima_confirmacion_en: now.toISOString(),
     siguiente_procedimiento_en: siguiente,
     riesgo_actual: "bajo",
     minutos_intervalo: intervalo,
   });
+
+  if (estadoError) {
+    throw toError("No se pudo crear estado vesical", estadoError);
+  }
 
   return {
     perfil: {
@@ -408,35 +586,63 @@ async function iniciarPaciente(data) {
 
 async function vincularCuidador(codigo) {
   const codigoNormalizado = normalizarCodigoVinculacion(codigo);
-  const paciente = store.getPacienteByCodigoVinculacion(codigoNormalizado);
+
+  const { data: paciente, error: pacienteError } = await db()
+    .from("pacientes")
+    .select("*")
+    .eq("codigo_vinculacion", codigoNormalizado)
+    .maybeSingle();
+
+  if (pacienteError) {
+    throw toError("No se pudo validar codigo de vinculacion", pacienteError);
+  }
 
   if (!paciente) {
     return { ok: false, mensaje: "Codigo de vinculacion invalido" };
   }
 
-  const existingLink = store.getActiveLinkByPacienteId(paciente.id);
+  const existingLink = await getActiveLinkByPacienteId(paciente.id);
 
   if (existingLink) {
-    store.updatePaciente(paciente.id, { cuidador_vinculado: true });
+    await db().from("pacientes").update({ cuidador_vinculado: true }).eq("id", paciente.id);
     return { ok: true, mensaje: "Cuidador ya vinculado para este paciente" };
   }
 
-  const cuidador = store.insertCuidador({ nombre: "Cuidador vinculado" });
+  const { data: cuidador, error: cuidadorError } = await db()
+    .from("cuidadores")
+    .insert({ nombre: "Cuidador vinculado" })
+    .select("*")
+    .single();
 
-  store.insertPacienteCuidador({
+  if (cuidadorError) {
+    throw toError("No se pudo crear cuidador", cuidadorError);
+  }
+
+  const { error: linkError } = await db().from("paciente_cuidador").insert({
     paciente_id: paciente.id,
     cuidador_id: cuidador.id,
     codigo_vinculacion_usado: codigoNormalizado,
     activo: true,
   });
 
-  store.updatePaciente(paciente.id, { cuidador_vinculado: true, tiene_cuidador: true });
+  if (linkError) {
+    throw toError("No se pudo vincular cuidador", linkError);
+  }
+
+  const { error: updatePacienteError } = await db()
+    .from("pacientes")
+    .update({ cuidador_vinculado: true, tiene_cuidador: true })
+    .eq("id", paciente.id);
+
+  if (updatePacienteError) {
+    throw toError("No se pudo actualizar paciente", updatePacienteError);
+  }
 
   return { ok: true, mensaje: "Cuidador vinculado correctamente" };
 }
 
 async function obtenerEstadoHidratacion() {
-  const paciente = getPacienteActivo();
+  const paciente = await getPacienteActivo();
 
   if (!paciente) {
     return buildEmptyResumen().hidratacion;
@@ -446,19 +652,23 @@ async function obtenerEstadoHidratacion() {
 }
 
 async function registrarAgua(mililitros) {
-  const paciente = getPacienteActivo();
+  const paciente = await getPacienteActivo();
 
   if (!paciente) {
     throw new Error("No hay paciente registrado");
   }
 
-  store.insertHidratacion({
+  const { error } = await db().from("hidratacion_registros").insert({
     paciente_id: paciente.id,
     cantidad_ml: Number(mililitros),
     origen: "boton_rapido",
   });
 
-  resolverAlertasActivasByTipo(paciente.id, "hidratacion", "resuelta");
+  if (error) {
+    throw toError("No se pudo registrar hidratacion", error);
+  }
+
+  await resolverAlertasActivasByTipo(paciente.id, "hidratacion", "resuelta");
 
   return getHidratacionDelDia(paciente.id);
 }
@@ -469,7 +679,7 @@ async function confirmarProcedimiento({ checklist, actor }) {
     return { ok: false, mensaje: "Debes completar el checklist obligatorio" };
   }
 
-  const paciente = getPacienteActivo();
+  const paciente = await getPacienteActivo();
 
   if (!paciente) {
     return { ok: false, mensaje: "No hay paciente registrado" };
@@ -479,7 +689,7 @@ async function confirmarProcedimiento({ checklist, actor }) {
   const intervalo = getIntervaloMinutos(paciente.tipo_manejo_vesical);
   const siguiente = addMinutesToIso(now, intervalo);
 
-  store.insertProcedimiento({
+  const { error: procError } = await db().from("procedimiento_registros").insert({
     paciente_id: paciente.id,
     actor,
     checklist_lavado_manos: true,
@@ -488,13 +698,24 @@ async function confirmarProcedimiento({ checklist, actor }) {
     confirmado_en: now.toISOString(),
   });
 
-  store.updateEstadoVesical(paciente.id, {
-    ultima_confirmacion_en: now.toISOString(),
-    siguiente_procedimiento_en: siguiente,
-    riesgo_actual: "bajo",
-  });
+  if (procError) {
+    throw toError("No se pudo confirmar procedimiento", procError);
+  }
 
-  resolverAlertasActivasByTipo(paciente.id, "procedimiento", "resuelta");
+  const { error: estadoError } = await db()
+    .from("estado_vesical_paciente")
+    .update({
+      ultima_confirmacion_en: now.toISOString(),
+      siguiente_procedimiento_en: siguiente,
+      riesgo_actual: "bajo",
+    })
+    .eq("paciente_id", paciente.id);
+
+  if (estadoError) {
+    throw toError("No se pudo actualizar estado vesical", estadoError);
+  }
+
+  await resolverAlertasActivasByTipo(paciente.id, "procedimiento", "resuelta");
 
   return {
     ok: true,
@@ -506,59 +727,61 @@ async function confirmarProcedimiento({ checklist, actor }) {
 }
 
 async function recalcularAlertas() {
-  const pacientes = store.getAllPacientes();
+  const pacientes = await getAllPacientes();
 
   let total = 0;
   for (const paciente of pacientes) {
-    recalcularAlertasPaciente(paciente);
-    recalcularRecordatoriosCambioSonda(paciente);
-    recalcularRecordatoriosAgua(paciente);
-    total += getAlertasActivasByPacienteId(paciente.id).length;
+    await recalcularAlertasPaciente(paciente);
+    await recalcularRecordatoriosCambioSonda(paciente);
+    await recalcularRecordatoriosAgua(paciente);
+    const activas = await getAlertasActivasByPacienteId(paciente.id);
+    total += activas.length;
   }
 
   return { totalAlertasActivas: total };
 }
 
 async function obtenerAlertasActivas() {
-  const paciente = getPacienteActivo();
+  const paciente = await getPacienteActivo();
 
   if (!paciente) {
     return [];
   }
 
-  recalcularAlertasPaciente(paciente);
-  recalcularRecordatoriosCambioSonda(paciente);
-  recalcularRecordatoriosAgua(paciente);
+  await recalcularAlertasPaciente(paciente);
+  await recalcularRecordatoriosCambioSonda(paciente);
+  await recalcularRecordatoriosAgua(paciente);
   return getAlertasActivasByPacienteId(paciente.id);
 }
 
 async function confirmarAlertas() {
-  const paciente = getPacienteActivo();
+  const paciente = await getPacienteActivo();
 
   if (!paciente) {
     return { ok: true, mensaje: "Sin paciente activo" };
   }
 
-  resolverAlertasActivas(paciente.id, "confirmada");
+  await resolverAlertasActivas(paciente.id, "confirmada");
   return { ok: true, mensaje: "Alertas confirmadas" };
 }
 
 async function crearAlertaSimulada({ tipo = "hidratacion", nivel = "amarilla", mensaje, destino = "paciente" }) {
-  const paciente = getPacienteActivo();
+  const paciente = await getPacienteActivo();
 
   if (!paciente) {
     return { ok: false, mensaje: "No hay paciente activo" };
   }
 
   const riesgo = nivel === "roja" ? "alto" : "moderado";
-  const texto = mensaje ||
+  const texto =
+    mensaje ||
     (tipo === "sonda"
       ? "Simulacion: Hoy corresponde cambio de sonda"
       : tipo === "procedimiento"
         ? "Simulacion: Retraso en procedimiento vesical"
         : "Simulacion: Es hora de tomar agua");
 
-  insertAlerta({
+  await insertAlerta({
     paciente_id: paciente.id,
     tipo: `simulada_${tipo}`,
     nivel,
@@ -573,19 +796,19 @@ async function crearAlertaSimulada({ tipo = "hidratacion", nivel = "amarilla", m
 }
 
 async function obtenerResumen() {
-  const paciente = getPacienteActivo();
+  const paciente = await getPacienteActivo();
 
   if (!paciente) {
     return buildEmptyResumen();
   }
 
-  recalcularAlertasPaciente(paciente);
-  recalcularRecordatoriosCambioSonda(paciente);
-  recalcularRecordatoriosAgua(paciente);
+  await recalcularAlertasPaciente(paciente);
+  await recalcularRecordatoriosCambioSonda(paciente);
+  await recalcularRecordatoriosAgua(paciente);
 
-  const hidratacion = getHidratacionDelDia(paciente.id);
-  const estado = getEstadoPaciente(paciente.id);
-  const alertasActivas = getAlertasActivasByPacienteId(paciente.id);
+  const hidratacion = await getHidratacionDelDia(paciente.id);
+  const estado = await getEstadoPaciente(paciente.id);
+  const alertasActivas = await getAlertasActivasByPacienteId(paciente.id);
 
   return {
     onboardingCompleto: true,
