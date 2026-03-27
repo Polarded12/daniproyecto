@@ -48,6 +48,54 @@ function toError(message, originalError) {
   return error;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function esErrorTransitorio(error) {
+  let current = error;
+  const patrones = [
+    /fetch failed/i,
+    /ECONNRESET/i,
+    /ETIMEDOUT/i,
+    /ENOTFOUND/i,
+    /EAI_AGAIN/i,
+    /socket hang up/i,
+    /network/i,
+  ];
+
+  while (current) {
+    const mensaje = String(current.message || "");
+    if (patrones.some((pattern) => pattern.test(mensaje))) {
+      return true;
+    }
+    current = current.cause;
+  }
+
+  return false;
+}
+
+async function executeWithRetry(operation, options = {}) {
+  const { retries = 2, baseDelayMs = 400 } = options;
+  let lastError;
+
+  for (let intento = 0; intento <= retries; intento++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!esErrorTransitorio(error) || intento === retries) {
+        throw error;
+      }
+
+      const delay = baseDelayMs * (intento + 1);
+      await sleep(delay);
+    }
+  }
+
+  throw lastError;
+}
+
 function mapAlerta(item) {
   return {
     id: item.id,
@@ -132,7 +180,7 @@ async function getPacienteActivo() {
 }
 
 async function getAllPacientes() {
-  const { data, error } = await db().from("pacientes").select("*");
+  const { data, error } = await executeWithRetry(async () => db().from("pacientes").select("*"));
 
   if (error) {
     throw toError("No se pudo obtener pacientes", error);
